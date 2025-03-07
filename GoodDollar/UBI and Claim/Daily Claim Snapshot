@@ -1,0 +1,50 @@
+-- Query 1: Daily Activity Snapshot (with DEX prices)
+WITH
+first_claims AS (
+  SELECT 
+    claimer,
+    MIN(evt_block_date) AS first_claim_date
+  FROM gooddollar_celo.ubischemev2_evt_ubiclaimed
+  WHERE contract_address = {{UBI_Contract}}
+  GROUP BY claimer
+),
+daily_claims AS (
+  SELECT
+    CAST(c.evt_block_date AS DATE) AS day,
+    c.claimer,
+    c.amount,
+    CASE 
+      WHEN c.evt_block_date = f.first_claim_date THEN 'new'
+      ELSE 'returning'
+    END AS user_type
+  FROM gooddollar_celo.ubischemev2_evt_ubiclaimed c
+  LEFT JOIN first_claims f
+    ON c.claimer = f.claimer
+  WHERE c.contract_address = {{UBI_Contract}}
+),
+dex_prices AS (
+  -- Use DEX trades to calculate G$ price
+  SELECT
+    DATE_TRUNC('day', block_time) AS day,
+    -- Calculate avg daily price (total USD / total G$ traded)
+    SUM(amount_usd) / SUM(token_sold_amount) AS gd_price
+  FROM dex.trades
+  WHERE 
+    token_sold_address = {{Token_Contract}}  -- G$ contract
+    AND blockchain = 'celo'
+  GROUP BY 1
+)
+SELECT
+  dc.day,
+  COUNT(DISTINCT dc.claimer) AS active_claimers,
+  COUNT(DISTINCT CASE WHEN dc.user_type = 'new' THEN dc.claimer END) AS new_claimers,
+  COUNT(DISTINCT CASE WHEN dc.user_type = 'returning' THEN dc.claimer END) AS returning_claimers,
+  SUM(dc.amount / 1e18) AS total_gd_claimed,
+  -- Use DEX-derived price:
+  SUM(dc.amount / 1e18) * COALESCE(dp.gd_price, 0) AS total_usd_claimed,
+  SUM(SUM(dc.amount / 1e18)) OVER (ORDER BY dc.day) AS cumulative_gd_claimed
+FROM daily_claims dc
+LEFT JOIN dex_prices dp
+  ON dc.day = dp.day
+GROUP BY dc.day, dp.gd_price
+ORDER BY dc.day DESC;
