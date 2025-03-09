@@ -1,0 +1,34 @@
+WITH first_claims AS (
+  SELECT 
+    claimer, 
+    MIN(evt_block_time) AS first_claim_date
+  FROM gooddollar_celo.ubischemev2_evt_ubiclaimed
+  WHERE contract_address = {{UBI_Contract}}
+  GROUP BY claimer
+),
+daily_users AS (
+  SELECT
+    DATE(evt_block_time) AS day,
+    claimer,
+    CASE WHEN evt_block_time = first_claim_date THEN 1 ELSE 0 END AS is_new
+  FROM gooddollar_celo.ubischemev2_evt_ubiclaimed
+  LEFT JOIN first_claims USING (claimer)
+),
+rolling_metrics AS (
+  SELECT 
+    day, 
+    COUNT(DISTINCT claimer) AS dau,
+    (SELECT COUNT(DISTINCT claimer) 
+     FROM daily_users 
+     WHERE day BETWEEN d.day - INTERVAL '6' DAY AND d.day) AS wau,
+    (SELECT COUNT(DISTINCT claimer) 
+     FROM daily_users 
+     WHERE day BETWEEN d.day - INTERVAL '29' DAY AND d.day) AS mau,
+    COUNT(DISTINCT CASE WHEN is_new = 0 THEN claimer END) AS returning_claimers,
+    COUNT(DISTINCT CASE WHEN is_new = 1 THEN claimer END) AS new_claimers
+  FROM daily_users d
+  GROUP BY day
+)
+SELECT *
+FROM rolling_metrics
+ORDER BY day DESC;
